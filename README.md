@@ -15,8 +15,10 @@
 
 ### How to run?
     - [ ] Clone the repo
+    - [ ] Go to relevant project directory `cd pancakeswap` for pancakeswap and `cd uniswap` for uniswap
     - [ ] Run `forge install`
     - [ ] Run `forge test -vv` to run the tests
+  
 
 ### Research & Development
 
