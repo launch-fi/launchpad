@@ -13,3 +13,4 @@ v4-periphery/=lib/v4-periphery/contracts/
 lib/v4-periphery:@uniswap/v4-core/=lib/v4-core/
 @pancakeswap/v4-core/=lib/pancake-v4-core/
 @pancakeswap/v4-periphery/=lib/pancake-v4-periphery/
+@prb/math/=lib/prb-math/
