@@ -4,3 +4,4 @@ forge-std/=lib/forge-std/src/
 @pancakeswap/v4-periphery/=lib/pancake-v4-periphery/
 @openzeppelin/=lib/openzeppelin-contracts/
 solmate/=lib/solmate/src/
+@prb/math/=lib/prb-math/
