@@ -97,15 +97,21 @@ contract DutchAuctionLaunchPad is CLBaseHook {
         if (Currency.unwrap(key.currency0)==_paymentToken) {
             paymentToken[poolId] = Currency.unwrap(key.currency0);
             tokenToSell[poolId] = Currency.unwrap(key.currency1);
+            
+            vault.sync(key.currency1);
+            IERC20Minimal(Currency.unwrap(key.currency1)).transfer(address(vault), uint256(_initialTokenSupply));
+            vault.settle(key.currency1);
 
-            vault.settle {value: uint256(_initialTokenSupply)}(key.currency1);
             vault.take(key.currency1, address(this), uint256(_initialTokenSupply));
 
         } else if ( Currency.unwrap(key.currency1)==_paymentToken) {      
             paymentToken[poolId] = Currency.unwrap(key.currency1);
             tokenToSell[poolId] = Currency.unwrap(key.currency0);
 
-            vault.settle {value: uint256(_initialTokenSupply)}(key.currency0);
+            vault.sync(key.currency0);
+            IERC20Minimal(Currency.unwrap(key.currency0)).transfer(address(vault), uint256(_initialTokenSupply));
+            vault.settle(key.currency0);
+
             vault.take(key.currency0, address(this), uint256(_initialTokenSupply));
         } else revert INVALID_PAYMENT_TOKEN();
         return DutchAuctionLaunchPad.beforeInitialize.selector;
