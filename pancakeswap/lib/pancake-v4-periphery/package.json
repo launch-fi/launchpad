@@ -1,0 +1,16 @@
+{
+  "name": "pancake-v4-periphery",
+  "description": "Pancakeswap v4 periphery",
+  "version": "1.0.0",
+  "main": "index.js",
+  "license": "MIT",
+  "devDependencies": {},
+  "scripts": {
+    "compile": "forge compile",
+    "test": "forge test --isolate",
+    "dev": "forge test --isolate -vvv -w",
+    "snapshot": "rm -fr .forge-snapshots && forge test",
+    "prettier": "forge fmt src/ && forge fmt test/ && forge fmt script/",
+    "prettier-check": "forge fmt --check"
+  }
+}

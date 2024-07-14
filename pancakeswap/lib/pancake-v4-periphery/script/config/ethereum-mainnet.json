@@ -1,0 +1,12 @@
+{
+    "weth": "0x",
+    "vault": "0x",
+    "clPoolManager": "0x",
+    "binPoolManager": "0x",
+    "nonFungibleTokenPositionDescriptorOffChain": "0x",
+    "NFTPositionDescriptorProxyAdmin": "0x",
+    "nonFungiblePositionManager": "0x",
+    "clSwapRouter": "0x",
+    "binFungiblePositionManager": "0x",
+    "binSwapRouter": "0x"
+}
