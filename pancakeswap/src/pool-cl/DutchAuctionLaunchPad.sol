@@ -142,9 +142,6 @@ contract DutchAuctionLaunchPad is CLBaseHook {
             }
             tokenSupplyLeft[poolId] -= params.amountSpecified; 
             if (tokenSupplyLeft[poolId] < 0) {
-                // tokenSupplyLeft[poolId] += params.amountSpecified;
-                // params.amountSpecified = tokenSupplyLeft[poolId];
-                // tokenSupplyLeft[poolId] = 0;
                 revert INSUFFICIENT_AVAILABLE_TOKENS();
             }
             uint256 unspecifiedAmount;

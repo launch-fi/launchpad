@@ -149,9 +149,6 @@ contract ExponentialLaunchpad is CLBaseHook {
                 key
             );
 
-            // specified.take(manager, address(this), specifiedAmount, false);
-            // unspecified.settle(manager, address(this), unspecifiedAmount, false);
-
             vault.take(specified, address(this), specifiedAmount);
             vault.settle{value: unspecifiedAmount}(unspecified);
 
@@ -164,9 +161,6 @@ contract ExponentialLaunchpad is CLBaseHook {
                 params.zeroForOne,
                 key
             );
-
-            // unspecified.take(manager, address(this), unspecifiedAmount, false);
-            // specified.settle(manager, address(this), specifiedAmount, false);
 
             vault.take(unspecified, address(this), unspecifiedAmount);
             vault.settle{value: specifiedAmount}(specified);
