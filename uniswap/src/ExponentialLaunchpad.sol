@@ -18,20 +18,21 @@ import { console } from "forge-std/console.sol";
 import {LiquidityAmounts} from "v4-periphery/libraries/LiquidityAmounts.sol";
 import {UniswapV4ERC20} from "./UniswapV4ERC20.sol";
 import {IUnlockCallback} from "v4-core/src/interfaces/callback/IUnlockCallback.sol";
+import { UD60x18, ud } from "@prb/math/src/UD60x18.sol";
 import {TransientStateLibrary} from "v4-core/src/libraries/TransientStateLibrary.sol";
 import {IHooks} from "v4-core/src/interfaces/IHooks.sol";
 
-error SALE_IS_STILL_ONGOING();
-error SALE_IS_OVER();
-error AMOUNT_SPECIFIED_MUST_BE_NEGATIVE();
-error PURCHASE_AMOUNT_TO_SMALL();
-error DURING_SALE_PERIOD_ONLY_ALLOW_USDC_IN();
-error ALREADY_PROVIDED_INITIAL_LIQUIDITY();
-error INITIAL_LIQUIDITY_NOT_PROVIDED();
-error PURCHASE_AMOUNT_TOO_BIG();
-error SENDER_MUST_BE_HOOK();
-error POOL_NOT_INITIALIZED();
-error TOO_MUCH_SLIPPAGE();
+    error SALE_IS_STILL_ONGOING();
+    error SALE_IS_OVER();
+    error AMOUNT_SPECIFIED_MUST_BE_NEGATIVE();
+    error PURCHASE_AMOUNT_TO_SMALL();
+    error DURING_SALE_PERIOD_ONLY_ALLOW_USDC_IN();
+    error ALREADY_PROVIDED_INITIAL_LIQUIDITY();
+    error INITIAL_LIQUIDITY_NOT_PROVIDED();
+    error PURCHASE_AMOUNT_TOO_BIG();
+    error SENDER_MUST_BE_HOOK();
+    error POOL_NOT_INITIALIZED();
+    error TOO_MUCH_SLIPPAGE();
 
 // launch to launch a token using usdc
 contract ExponentialLaunchpad is BaseHook {
@@ -62,12 +63,16 @@ contract ExponentialLaunchpad is BaseHook {
     int24 internal constant INVERT_MAXIMUM_TICK = 345405;
     int24 internal constant INVERT_MINIMUM_TICK = 276324;
 
+    // TODO: Make this customisable based on user input
+    uint256 public constant INITIAL_FEE = 100000; // 10% in basis points
+    uint256 public constant DECAY_DURATION = 10 days;
+
     mapping(PoolId => uint256 mintSupply) public tokenToMintSupply;
     mapping(PoolId => uint256 tokensMinted) public mintedTokens;
     mapping(PoolId => address poolToken) public poolLpToken;
-
+    mapping(PoolId => uint256 clStartTime) public poolToLPStartTime;
+    mapping(PoolId => uint24 dynamicLpFee) public poolDynamicFees;
     mapping(PoolId => bool) public buyDirection;
-    mapping(PoolId => bool) public initialLiquidity;
 
     // Token address that users need to seed for launchpad
     address public immutable TOKEN_ADDRESS = address(0);
@@ -191,11 +196,41 @@ contract ExponentialLaunchpad is BaseHook {
 
         uint256 specifiedAmount = getSpecifiedAmount(params, exactInput);
 
+        PoolId id = key.toId();
+        uint256 lpStartTime = poolToLPStartTime[id];
+
+        punishDumpers(exactInput, Currency.unwrap(specified), key);
+
         if (exactInput) {
             return handleExactInput(params, key, specified, unspecified, specifiedAmount);
         } else {
             return handleExactOutput(params, key, specified, unspecified, specifiedAmount);
         }
+    }
+
+    function punishDumpers(bool exactInput, address specified, PoolKey calldata key) internal {
+        if (exactInput) {
+            // Check input is NOT TOKEN_ADDRESS (buying action)
+            if (specified == TOKEN_ADDRESS) {
+                uint24 fee = calculateDynamicLpFee(key.toId());
+                poolDynamicFees[key.toId()] = fee;
+                manager.updateDynamicLPFee(key, fee);
+            }
+        } else {
+            // Check output is TOKEN_ADDRESS (selling action)
+            if (specified != TOKEN_ADDRESS) {
+                uint24 fee = calculateDynamicLpFee(key.toId());
+                poolDynamicFees[key.toId()] = fee;
+                manager.updateDynamicLPFee(key, fee);
+            }
+        }
+    }
+
+    function getFee(
+        PoolKey calldata key
+    ) external view returns (uint24) {
+        uint24 currentDynamicLpFee = poolDynamicFees[key.toId()];
+        return currentDynamicLpFee;
     }
 
     function handleExactInput(
@@ -208,7 +243,8 @@ contract ExponentialLaunchpad is BaseHook {
         uint256 unspecifiedAmount;
         BeforeSwapDelta returnDelta;
 
-        (, unspecifiedAmount) = handleExactInputSwap(
+        // because we may need to change the inputAmount if the input is too large
+        (specifiedAmount, unspecifiedAmount) = handleExactInputSwap(
             specifiedAmount,
             specified,
             unspecified,
@@ -261,19 +297,48 @@ contract ExponentialLaunchpad is BaseHook {
     // End of Hooks //
     //////////////////
 
+
+    //////////////////
+    // Dynamic fees //
+    //////////////////
+
+    function calculateDynamicLpFee(PoolId id) internal view returns (uint24) {
+        UD60x18 elapsedTime = ud(block.timestamp).sub(ud(poolToLPStartTime[id]));
+        if (elapsedTime >= ud(DECAY_DURATION)) {
+            return 0;
+        }
+
+        // Scaled by 1e18
+        UD60x18 normalizedTime = (ud(DECAY_DURATION).sub(elapsedTime)).div(ud(DECAY_DURATION));
+
+        // Linear decay
+        UD60x18 currentFeeUd = normalizedTime.mul(ud(INITIAL_FEE)).div(ud(1e18));
+
+        // Convert the fee to uint256 by rounding down
+        uint40 feeX40 = currentFeeUd.intoUint40();
+
+        return uint24(feeX40);
+    }
+
     function seedInitialLiquidity(PoolKey calldata key) internal {
         PoolId id = key.toId();
 
         if (mintedTokens[id] >= tokenToMintSupply[id]) {
             // Seed liquidity to pool for currency0, currency1
-            if (!initialLiquidity[id]) {
+            if (poolToLPStartTime[id] == 0) {
+                // Deploy ERC20 LP token
+                address poolToken = address(new UniswapV4ERC20("MEME", "MEME"));
+                poolLpToken[id] = poolToken;
+
+                // Replace with actual token address
+                UniswapV4ERC20(poolToken).mint(address(this), 10_000 ether);
 
                 uint128 liquidityBefore = manager.getPosition(
                     id, address(this), TickMath.minUsableTick(key.tickSpacing), TickMath.maxUsableTick(key.tickSpacing), 0
                 ).liquidity;
                 int256 delta0;
                 int256 delta1;
-               { 
+                {
                     int deltaBefore0 = manager.currencyDelta(address(this), key.currency0);
                     int deltaBefore1 = manager.currencyDelta(address(this), key.currency1);
 
@@ -292,7 +357,7 @@ contract ExponentialLaunchpad is BaseHook {
                         id, address(this), TickMath.minUsableTick(key.tickSpacing), TickMath.maxUsableTick(key.tickSpacing), 0
                     ).liquidity;
 
-            
+
                     int deltaAfter0 = manager.currencyDelta(address(this), key.currency0);
                     int deltaAfter1 = manager.currencyDelta(address(this), key.currency1);
                     delta0 = deltaAfter0 - deltaBefore0;
@@ -300,7 +365,7 @@ contract ExponentialLaunchpad is BaseHook {
                     require(
                         int128(liquidityBefore) + 0.01 ether == int128(liquidityAfter), "liquidity change incorrect"
                     );
-               }
+                }
 
                 if (delta0 < 0) key.currency0.settle(manager, address(this), uint256(-delta0), false);
                 if (delta1 < 0) key.currency1.settle(manager, address(this), uint256(-delta1), false);
@@ -308,12 +373,10 @@ contract ExponentialLaunchpad is BaseHook {
                 if (delta1 > 0) key.currency1.take(manager, address(this), uint256(delta1), false);
 
                 // Add liquidity to pool
+                poolToLPStartTime[id] = block.timestamp;
 
                 // Replace with actual token address
                 UniswapV4ERC20(poolLpToken[id]).mint(address(this), 0.01 ether);
-                console.log("modified");
-
-                initialLiquidity[id] = true;
             }
         }
     }
@@ -388,7 +451,7 @@ contract ExponentialLaunchpad is BaseHook {
         if (mintedTokens[id] < tokenToMintSupply[id]) {
             // TODO: Handle selling pressure
             if (Currency.unwrap(unspecified) != TOKEN_ADDRESS) revert DURING_SALE_PERIOD_ONLY_ALLOW_USDC_IN();
-
+            if (amountOut + mintedTokens[id] > tokenToMintSupply[id]) revert PURCHASE_AMOUNT_TOO_BIG();
             if (zeroForOne) {
                 int24 currTick = MINIMUM_TICK + int24((MAXIMUM_TICK - MINIMUM_TICK) * int256(mintedTokens[id]) / int256(tokenToMintSupply[id]));
                 uint160 sqrtPriceX96 = TickMath.getSqrtPriceAtTick(currTick);
@@ -411,8 +474,10 @@ contract ExponentialLaunchpad is BaseHook {
                 amountIn = (2**92 * uint256(specifiedAmount)) / priceX92;
             }
             amountOut = uint256(specifiedAmount);
+
+            mintedTokens[id] += amountOut;
         } else {
-            if (!initialLiquidity[id]) revert INITIAL_LIQUIDITY_NOT_PROVIDED();
+            if (poolToLPStartTime[id] == 0) revert INITIAL_LIQUIDITY_NOT_PROVIDED();
             amountIn = 0;
             amountOut = 0;
         }
@@ -439,6 +504,14 @@ contract ExponentialLaunchpad is BaseHook {
                 // minimum value of sqrtPriceX96**2/tokensUsedToPurchase is (1.0001**-345405 * 2**192) / (1e9 * 1e6) > 1
                 uint256 inverseTokenPurchased =  (uint256(sqrtPriceX96) ** 2) / uint256(amountSpecified);
                 amountOut = 2**192 / inverseTokenPurchased;
+                if (mintedTokens[id] + amountOut > tokenToMintSupply[id]) {
+                    amountOut = tokenToMintSupply[id] - mintedTokens[id];
+                    amountIn = (uint256(sqrtPriceX96) ** 2) /  (2**192 / amountOut);
+                    mintedTokens[id] = tokenToMintSupply[id];
+                } else {
+                    amountIn = uint256(amountSpecified);
+                    mintedTokens[id] += amountOut;
+                }
             } else {
                 int24 currTick = INVERT_MAXIMUM_TICK - int24((INVERT_MAXIMUM_TICK - INVERT_MINIMUM_TICK) * int256(mintedTokens[id]) / int256(tokenToMintSupply[id]));
                 uint256 sqrtPriceX96 = uint256(TickMath.getSqrtPriceAtTick(currTick));
@@ -449,19 +522,27 @@ contract ExponentialLaunchpad is BaseHook {
                 // --> need to divide the initial product by 2**100
                 uint256 priceX92 = (uint256(sqrtPriceX96) ** 2) / 2**100;
                 amountOut = priceX92 * amountSpecified / 2**92;
+                if (mintedTokens[id] + amountOut > tokenToMintSupply[id]) {
+                    amountOut = tokenToMintSupply[id] - mintedTokens[id];
+                    amountIn = (2**92 * amountOut) / priceX92;
+                    mintedTokens[id] = tokenToMintSupply[id];
+                } else {
+                    amountIn = uint256(amountSpecified);
+                    mintedTokens[id] += amountOut;
+                }
             }
 
-            amountIn = uint256(amountSpecified);
+            // amountIn = uint256(amountSpecified);
 
-            // Ideally, we want to mint the exact amount of tokens, then refund the remaining amount not used to the user
-            mintedTokens[id] += amountOut;
-            // TODO: Just quick fix here, change later
-            if (mintedTokens[id] + amountOut > tokenToMintSupply[id]) {
-                amountOut -= mintedTokens[id] - tokenToMintSupply[id];
-                mintedTokens[id] = tokenToMintSupply[id];
-            }
+            // // Ideally, we want to mint the exact amount of tokens, then refund the remaining amount not used to the user
+            // mintedTokens[id] += amountOut;
+            // // TODO: Just quick fix here, change later
+            // if (mintedTokens[id] + amountOut > tokenToMintSupply[id]) {
+            //     amountOut -= mintedTokens[id] - tokenToMintSupply[id];
+            //     mintedTokens[id] = tokenToMintSupply[id];
+            // }
         } else {
-            if (!initialLiquidity[id]) revert INITIAL_LIQUIDITY_NOT_PROVIDED();
+            if (poolToLPStartTime[id] == 0) revert INITIAL_LIQUIDITY_NOT_PROVIDED();
             amountIn = 0;
             amountOut = 0;
         }
@@ -524,9 +605,9 @@ contract ExponentialLaunchpad is BaseHook {
     }
 
     function removeLiquidity(RemoveLiquidityParams calldata params)
-        public
-        virtual
-        returns (BalanceDelta delta)
+    public
+    virtual
+    returns (BalanceDelta delta)
     {
         PoolKey memory key = PoolKey({
             currency0: params.currency0,
@@ -555,19 +636,19 @@ contract ExponentialLaunchpad is BaseHook {
         );
 
         erc20.burn(msg.sender, params.liquidity);
-    }   
+    }
 
 
     function modifyLiquidity(PoolKey memory key, IPoolManager.ModifyLiquidityParams memory params)
-        internal
-        returns (BalanceDelta delta)
+    internal
+    returns (BalanceDelta delta)
     {
         delta = abi.decode(manager.unlock(abi.encode(CallbackData(msg.sender, key, params))), (BalanceDelta));
     }
 
     function _removeLiquidity(PoolKey memory key, IPoolManager.ModifyLiquidityParams memory params)
-        internal
-        returns (BalanceDelta delta)
+    internal
+    returns (BalanceDelta delta)
     {
         PoolId poolId = key.toId();
         // PoolInfo storage pool = poolInfo[poolId];
